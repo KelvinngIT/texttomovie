@@ -225,7 +225,6 @@ else:
         # Download button
         with open(st.session_state.video_path, "rb") as f:
             video_bytes = f.read()
-
         st.download_button(
             label="⬇️ Download Video (MP4)",
             data=video_bytes,
