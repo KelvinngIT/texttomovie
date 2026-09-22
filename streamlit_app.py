@@ -185,26 +185,21 @@ else:
         st.session_state.otp = None
         st.session_state.video_path = None
         st.rerun()
-
     st.markdown("---")
     st.subheader("📤 Step 2: Upload image & generate video")
-
     uploaded_file = st.file_uploader(
         "Choose an image",
         type=["jpg", "jpeg", "png", "webp"],
         help="Best results with high-resolution landscape photos"
     )
-
     col_a, col_b = st.columns(2)
     with col_a:
         duration = st.slider("Video duration (seconds)", 3.0, 12.0, 6.0, 0.5)
     with col_b:
         zoom = st.slider("Zoom intensity", 1.1, 2.0, 1.35, 0.05)
-
     if uploaded_file is not None:
         image = Image.open(uploaded_file)
         st.image(image, caption="Preview", use_container_width=True)
-
         if st.button("🎬 Generate Video", type="primary", use_container_width=True):
             with st.spinner("Generating your video... this may take 10–30 seconds"):
                 try:
@@ -218,11 +213,7 @@ else:
     if st.session_state.video_path and os.path.exists(st.session_state.video_path):
         st.markdown("---")
         st.subheader("📥 Your Video is Ready")
-
-        # Show the video
         st.video(st.session_state.video_path)
-
-        # Download button
         with open(st.session_state.video_path, "rb") as f:
             video_bytes = f.read()
         st.download_button(
@@ -231,3 +222,4 @@ else:
             file_name="generated_video.mp4",
             mime="video/mp4",
             use_container_width=True
+        )
