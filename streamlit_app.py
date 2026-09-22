@@ -1,11 +1,11 @@
 import streamlit as st
 import tempfile
 import os
-import re
-from PIL import Image
 import numpy as np
+from PIL import Image, ImageEnhance, ImageFilter, ImageDraw, ImageFont
 from moviepy.editor import ImageClip
 from moviepy.video.fx.all import resize
+import cv2
 
 # ===== FIX for Pillow 10+ =====
 if not hasattr(Image, 'ANTIALIAS'):
@@ -13,58 +13,127 @@ if not hasattr(Image, 'ANTIALIAS'):
 
 # ====================== PAGE CONFIG ======================
 st.set_page_config(
-    page_title="Image → Video Generator",
+    page_title="Image → Video Generator Pro",
     page_icon="🎬",
     layout="centered",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="expanded"
 )
 
 # ====================== HELPER FUNCTIONS ======================
-def parse_motion_prompt(prompt: str) -> dict:
+def enhance_image(image: Image.Image, sharpness=1.5, contrast=1.2, brightness=1.1, color=1.1) -> Image.Image:
+    """Enhance image quality"""
+    img = image.convert("RGB")
+    
+    enhancer = ImageEnhance.Sharpness(img)
+    img = enhancer.enhance(sharpness)
+    
+    enhancer = ImageEnhance.Contrast(img)
+    img = enhancer.enhance(contrast)
+    
+    enhancer = ImageEnhance.Brightness(img)
+    img = enhancer.enhance(brightness)
+    
+    enhancer = ImageEnhance.Color(img)
+    img = enhancer.enhance(color)
+    
+    # Mild denoise
+    img = img.filter(ImageFilter.MedianFilter(size=3))
+    
+    return img
+
+
+def remove_watermark_simple(image: Image.Image, method="crop", crop_box=None) -> Image.Image:
     """
-    Simple keyword-based parser for motion description.
-    Returns parameters: zoom_direction, pan_x, pan_y, zoom_intensity
+    Simple watermark removal.
+    method: "crop" or "inpaint"
     """
-    prompt = prompt.lower().strip()
+    img = image.convert("RGB")
+    
+    if method == "crop" and crop_box:
+        # crop_box = (left, top, right, bottom)
+        return img.crop(crop_box)
+    
+    elif method == "inpaint":
+        # Basic OpenCV inpainting (works only for solid watermarks)
+        img_cv = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+        
+        # Create a simple mask (user should ideally draw it)
+        # For demo: assume watermark is in bottom-right corner
+        h, w = img_cv.shape[:2]
+        mask = np.zeros((h, w), dtype=np.uint8)
+        mask[int(h*0.85):, int(w*0.7):] = 255   # bottom-right area
+        
+        result = cv2.inpaint(img_cv, mask, inpaintRadius=7, flags=cv2.INPAINT_TELEA)
+        return Image.fromarray(cv2.cvtColor(result, cv2.COLOR_BGR2RGB))
+    
+    return img
 
-    # Default values
-    params = {
-        "zoom_in": True,          # True = zoom in, False = zoom out
-        "pan_x": 0.0,             # -1 (left) to +1 (right)
-        "pan_y": 0.0,             # -1 (up) to +1 (down)
-        "zoom_intensity": 1.35,
-    }
 
-    # Zoom direction
-    if any(word in prompt for word in ["zoom out", "pull out", "pull back", "reveal"]):
-        params["zoom_in"] = False
-    elif any(word in prompt for word in ["zoom in", "push in", "close up", "closer"]):
-        params["zoom_in"] = True
-
-    # Horizontal pan
-    if any(word in prompt for word in ["left", "to the left", "from right"]):
-        params["pan_x"] = -0.6
-    elif any(word in prompt for word in ["right", "to the right", "from left"]):
-        params["pan_x"] = 0.6
-
-    # Vertical pan
-    if any(word in prompt for word in ["up", "top", "upward"]):
-        params["pan_y"] = -0.5
-    elif any(word in prompt for word in ["down", "bottom", "downward"]):
-        params["pan_y"] = 0.5
-
-    # Intensity
-    if any(word in prompt for word in ["strong", "dramatic", "heavy", "big"]):
-        params["zoom_intensity"] = 1.6
-    elif any(word in prompt for word in ["gentle", "subtle", "soft", "slow"]):
-        params["zoom_intensity"] = 1.2
-
-    # Center focus
-    if "center" in prompt or "middle" in prompt:
-        params["pan_x"] = 0.0
-        params["pan_y"] = 0.0
-
-    return params
+def add_watermark(image: Image.Image, watermark_img=None, text=None, 
+                  position="bottom-right", opacity=0.4, scale=0.2) -> Image.Image:
+    """Add logo or text watermark"""
+    base = image.convert("RGBA")
+    width, height = base.size
+    
+    # Create watermark layer
+    watermark = Image.new("RGBA", base.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(watermark)
+    
+    if watermark_img:
+        # Logo watermark
+        wm = watermark_img.convert("RGBA")
+        wm_width = int(width * scale)
+        wm_height = int(wm_width * wm.size[1] / wm.size[0])
+        wm = wm.resize((wm_width, wm_height), Image.Resampling.LANCZOS)
+        
+        # Apply opacity
+        alpha = wm.split()[3]
+        alpha = ImageEnhance.Brightness(alpha).enhance(opacity)
+        wm.putalpha(alpha)
+        
+        # Position
+        if position == "top-left":
+            pos = (20, 20)
+        elif position == "top-right":
+            pos = (width - wm_width - 20, 20)
+        elif position == "bottom-left":
+            pos = (20, height - wm_height - 20)
+        elif position == "center":
+            pos = ((width - wm_width)//2, (height - wm_height)//2)
+        else:  # bottom-right
+            pos = (width - wm_width - 20, height - wm_height - 20)
+        
+        watermark.paste(wm, pos, wm)
+    
+    elif text:
+        # Text watermark
+        try:
+            font = ImageFont.truetype("arial.ttf", size=int(height * 0.05))
+        except:
+            font = ImageFont.load_default()
+        
+        # Get text size
+        bbox = draw.textbbox((0, 0), text, font=font)
+        text_width = bbox[2] - bbox[0]
+        text_height = bbox[3] - bbox[1]
+        
+        if position == "top-left":
+            pos = (20, 20)
+        elif position == "top-right":
+            pos = (width - text_width - 20, 20)
+        elif position == "bottom-left":
+            pos = (20, height - text_height - 20)
+        elif position == "center":
+            pos = ((width - text_width)//2, (height - text_height)//2)
+        else:
+            pos = (width - text_width - 20, height - text_height - 20)
+        
+        # Draw semi-transparent text
+        draw.text(pos, text, font=font, fill=(255, 255, 255, int(255 * opacity)))
+    
+    # Composite
+    result = Image.alpha_composite(base, watermark)
+    return result.convert("RGB")
 
 
 def create_video_from_image(
@@ -76,7 +145,7 @@ def create_video_from_image(
     pan_y: float = 0.2,
     zoom_in: bool = True
 ) -> str:
-    """Create a Ken Burns style video from a single image with controllable motion."""
+    """Create Ken Burns style video"""
     img_array = np.array(image.convert("RGB"))
     
     clip = ImageClip(img_array).set_duration(duration)
@@ -88,17 +157,14 @@ def create_video_from_image(
         if zoom_in:
             current_zoom = 1.0 + (zoom_factor - 1.0) * progress
         else:
-            # Zoom out
             current_zoom = zoom_factor - (zoom_factor - 1.0) * progress
 
         new_w = int(w * current_zoom)
         new_h = int(h * current_zoom)
 
-        # Pan direction controlled by pan_x / pan_y (-1 to 1)
         x_offset = int((new_w - w) * (0.5 + pan_x * 0.5) * progress)
         y_offset = int((new_h - h) * (0.5 + pan_y * 0.5) * progress)
 
-        # Keep offsets inside bounds
         x_offset = max(0, min(x_offset, new_w - w))
         y_offset = max(0, min(y_offset, new_h - h))
 
@@ -128,83 +194,175 @@ def create_video_from_image(
 # ====================== SESSION STATE ======================
 if "video_path" not in st.session_state:
     st.session_state.video_path = None
+if "processed_image" not in st.session_state:
+    st.session_state.processed_image = None
 
 
 # ====================== UI ======================
-st.title("🖼️ → 🎬 Image to Video Generator")
-st.markdown("Upload a photo and describe the camera movement you want.")
+st.title("🖼️ → 🎬 Image to Video Generator Pro")
+st.markdown("Enhance image • Remove/Add watermark • Create cinematic video")
 
 st.markdown("---")
 
 # ---------- UPLOAD ----------
-uploaded_file = st.file_uploader(
-    "Choose an image",
-    type=["jpg", "jpeg", "png", "webp"],
-    help="Best results with high-resolution photos"
-)
+uploaded_file = st.file_uploader("Upload an image", type=["jpg", "jpeg", "png", "webp"])
 
-# ---------- TEXT PROMPT ----------
-st.subheader("✍️ Describe the video movement")
-motion_prompt = st.text_area(
-    "What kind of camera movement do you want?",
-    placeholder="Examples:\n• slow zoom in to the center\n• pan from left to right\n• zoom out from the top\n• dramatic push in\n• gentle drift right",
-    height=100
-)
+if uploaded_file:
+    original_image = Image.open(uploaded_file).convert("RGB")
+    st.image(original_image, caption="Original Image", use_container_width=True)
 
-# ---------- SETTINGS ----------
-col_a, col_b = st.columns(2)
-with col_a:
-    duration = st.slider("Video duration (seconds)", 3.0, 12.0, 6.0, 0.5)
-with col_b:
-    # Manual override still available
-    manual_zoom = st.slider("Zoom intensity (manual override)", 1.1, 2.0, 1.35, 0.05)
+    st.markdown("---")
+    st.subheader("🛠️ Image Tools")
 
-if uploaded_file is not None:
-    image = Image.open(uploaded_file)
-    st.image(image, caption="Preview", use_container_width=True)
+    # ===== 1. ENHANCE IMAGE =====
+    with st.expander("✨ Enhance Image Quality", expanded=True):
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            sharpness = st.slider("Sharpness", 0.5, 3.0, 1.5, 0.1)
+        with col2:
+            contrast = st.slider("Contrast", 0.5, 2.0, 1.2, 0.1)
+        with col3:
+            brightness = st.slider("Brightness", 0.5, 2.0, 1.1, 0.1)
+        with col4:
+            color = st.slider("Color", 0.5, 2.0, 1.1, 0.1)
+
+        if st.button("Apply Enhancement"):
+            enhanced = enhance_image(original_image, sharpness, contrast, brightness, color)
+            st.session_state.processed_image = enhanced
+            st.success("Image enhanced!")
+            st.image(enhanced, caption="Enhanced Image", use_container_width=True)
+
+    # ===== 2. REMOVE WATERMARK =====
+    with st.expander("🧹 Remove Watermark"):
+        st.info("Simple removal works best for solid watermarks in the corner.")
+        
+        remove_method = st.radio("Method", ["Crop (Recommended)", "Auto Inpaint (Bottom-Right)"])
+        
+        if remove_method == "Crop (Recommended)":
+            st.write("Enter crop values (leave some margin around the watermark):")
+            c1, c2, c3, c4 = st.columns(4)
+            with c1:
+                left = st.number_input("Left", 0, original_image.width, 0)
+            with c2:
+                top = st.number_input("Top", 0, original_image.height, 0)
+            with c3:
+                right = st.number_input("Right", 0, original_image.width, original_image.width)
+            with c4:
+                bottom = st.number_input("Bottom", 0, original_image.height, original_image.height)
+            
+            if st.button("Apply Crop"):
+                cropped = original_image.crop((left, top, right, bottom))
+                st.session_state.processed_image = cropped
+                st.success("Cropped successfully!")
+                st.image(cropped, use_container_width=True)
+        
+        else:
+            if st.button("Try Auto Inpaint"):
+                result = remove_watermark_simple(original_image, method="inpaint")
+                st.session_state.processed_image = result
+                st.success("Inpainting applied (best for solid watermarks)")
+                st.image(result, use_container_width=True)
+
+    # ===== 3. ADD WATERMARK =====
+    with st.expander("💧 Add Watermark"):
+        wm_type = st.radio("Watermark Type", ["Text", "Logo Image"])
+        
+        position = st.selectbox("Position", ["bottom-right", "bottom-left", "top-right", "top-left", "center"])
+        opacity = st.slider("Opacity", 0.1, 1.0, 0.4, 0.05)
+        
+        if wm_type == "Text":
+            wm_text = st.text_input("Watermark Text", value="© My Brand")
+            if st.button("Add Text Watermark"):
+                base_img = st.session_state.processed_image or original_image
+                result = add_watermark(base_img, text=wm_text, position=position, opacity=opacity)
+                st.session_state.processed_image = result
+                st.success("Text watermark added!")
+                st.image(result, use_container_width=True)
+        
+        else:
+            wm_file = st.file_uploader("Upload Logo", type=["png", "jpg", "jpeg", "webp"], key="wm")
+            scale = st.slider("Logo Size", 0.05, 0.4, 0.15, 0.01)
+            
+            if wm_file and st.button("Add Logo Watermark"):
+                wm_img = Image.open(wm_file)
+                base_img = st.session_state.processed_image or original_image
+                result = add_watermark(base_img, watermark_img=wm_img, position=position, opacity=opacity, scale=scale)
+                st.session_state.processed_image = result
+                st.success("Logo watermark added!")
+                st.image(result, use_container_width=True)
+
+    # Show current processed image
+    if st.session_state.processed_image:
+        st.markdown("---")
+        st.subheader("Current Processed Image")
+        st.image(st.session_state.processed_image, use_container_width=True)
+        
+        if st.button("Reset to Original"):
+            st.session_state.processed_image = None
+            st.rerun()
+
+    # ===== GENERATE VIDEO =====
+    st.markdown("---")
+    st.subheader("🎬 Generate Video")
+
+    col_a, col_b = st.columns(2)
+    with col_a:
+        duration = st.slider("Duration (seconds)", 3.0, 12.0, 6.0, 0.5)
+    with col_b:
+        zoom = st.slider("Zoom Intensity", 1.1, 2.0, 1.35, 0.05)
+
+    motion = st.selectbox("Motion Style", [
+        "Zoom In (Center)",
+        "Zoom Out",
+        "Pan Left to Right",
+        "Pan Right to Left",
+        "Pan Up",
+        "Pan Down"
+    ])
 
     if st.button("🎬 Generate Video", type="primary", use_container_width=True):
-        with st.spinner("Generating your video... this may take 10–30 seconds"):
+        final_image = st.session_state.processed_image or original_image
+        
+        # Set motion parameters
+        zoom_in = True
+        pan_x, pan_y = 0.0, 0.0
+        
+        if motion == "Zoom Out":
+            zoom_in = False
+        elif motion == "Pan Left to Right":
+            pan_x = 0.6
+        elif motion == "Pan Right to Left":
+            pan_x = -0.6
+        elif motion == "Pan Up":
+            pan_y = -0.5
+        elif motion == "Pan Down":
+            pan_y = 0.5
+
+        with st.spinner("Generating video..."):
             try:
-                # Parse the text prompt
-                motion = parse_motion_prompt(motion_prompt)
-
-                # Use prompt intensity if user wrote something, otherwise use slider
-                final_zoom = motion["zoom_intensity"] if motion_prompt.strip() else manual_zoom
-
-                # Clean previous video
                 if st.session_state.video_path and os.path.exists(st.session_state.video_path):
                     try:
                         os.unlink(st.session_state.video_path)
-                    except Exception:
+                    except:
                         pass
 
                 video_path = create_video_from_image(
-                    image,
+                    final_image,
                     duration=duration,
-                    zoom_factor=final_zoom,
-                    pan_x=motion["pan_x"],
-                    pan_y=motion["pan_y"],
-                    zoom_in=motion["zoom_in"]
+                    zoom_factor=zoom,
+                    pan_x=pan_x,
+                    pan_y=pan_y,
+                    zoom_in=zoom_in
                 )
                 st.session_state.video_path = video_path
                 st.success("Video generated successfully!")
-                
-                # Show what the AI understood
-                with st.expander("🧠 Motion interpreted as"):
-                    st.write(f"- Zoom: {'In' if motion['zoom_in'] else 'Out'}")
-                    st.write(f"- Horizontal pan: {motion['pan_x']:.1f}")
-                    st.write(f"- Vertical pan: {motion['pan_y']:.1f}")
-                    st.write(f"- Intensity: {final_zoom:.2f}")
-
             except Exception as e:
-                st.error(f"Error generating video: {e}")
+                st.error(f"Error: {e}")
 
 # ---------- DOWNLOAD ----------
 if st.session_state.video_path and os.path.exists(st.session_state.video_path):
     st.markdown("---")
     st.subheader("📥 Your Video is Ready")
-
     st.video(st.session_state.video_path)
 
     with open(st.session_state.video_path, "rb") as f:
