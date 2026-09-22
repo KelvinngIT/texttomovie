@@ -1,19 +1,23 @@
-# 🎫 Support tickets template
+# 🖼️ → 🎬 Image to Video Generator (Streamlit)
 
-A simple Streamlit app showing an internal tool that lets you create, manage, and visualize support tickets. 
+A complete Streamlit app that lets users:
 
-[![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://support-tickets-template.streamlit.app/)
+1. Verify their email with a 6-digit OTP
+2. Upload any image
+3. Generate a cinematic Ken Burns style video
+4. Download the result as MP4
 
-### How to run it on your own machine
+## Features
 
-1. Install the requirements
+- Email verification (SMTP / Gmail)
+- Beautiful Streamlit UI
+- Adjustable duration & zoom intensity
+- One-click download
+- Fully local video generation (no paid AI API required)
 
-   ```
-   $ pip install -r requirements.txt
-   ```
+## Quick Start
 
-2. Run the app
+### 1. Clone the repository
 
-   ```
-   $ streamlit run streamlit_app.py
-   ```
+```bash
+git clone https://github.com/YOUR_USERNAME/image-to-video-streamlit.git
