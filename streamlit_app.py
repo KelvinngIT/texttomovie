@@ -6,6 +6,10 @@ import numpy as np
 from moviepy.editor import ImageClip
 from moviepy.video.fx.all import resize
 
+# ===== FIX for Pillow 10+ (ANTIALIAS removed) =====
+if not hasattr(Image, 'ANTIALIAS'):
+    Image.ANTIALIAS = Image.Resampling.LANCZOS
+
 # ====================== PAGE CONFIG ======================
 st.set_page_config(
     page_title="Image → Video Generator",
