@@ -2,3 +2,4 @@ streamlit
 Pillow
 numpy
 moviepy
+opencv-python-headless
