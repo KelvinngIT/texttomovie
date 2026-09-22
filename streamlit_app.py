@@ -3,12 +3,8 @@ import tempfile
 import os
 from PIL import Image
 import numpy as np
-
-# MoviePy imports (compatible with both 1.x and 2.x)
-try:
-    from moviepy import ImageClip
-except ImportError:
-    from moviepy.editor import ImageClip
+from moviepy.editor import ImageClip
+from moviepy.video.fx.all import resize
 
 # ====================== PAGE CONFIG ======================
 st.set_page_config(
@@ -28,10 +24,7 @@ def create_video_from_image(
     """Create a Ken Burns style video from a single image."""
     img_array = np.array(image.convert("RGB"))
     
-    # Create base clip
-    clip = ImageClip(img_array).with_duration(duration)  # MoviePy 2.x
-    # For MoviePy 1.x use: .set_duration(duration)
-
+    clip = ImageClip(img_array).set_duration(duration)
     w, h = clip.size
 
     def make_frame(t):
@@ -45,16 +38,13 @@ def create_video_from_image(
         x_offset = int((new_w - w) * 0.35 * progress)
         y_offset = int((new_h - h) * 0.25 * progress)
 
-        # Resize and crop
-        resized = clip.resized(new_size=(new_w, new_h))  # MoviePy 2.x
-        # For MoviePy 1.x: from moviepy.video.fx.all import resize
-        #                  resized = resize(clip, newsize=(new_w, new_h))
-
+        # Resize then crop
+        resized = resize(clip, newsize=(new_w, new_h))
         frame = resized.get_frame(t)
+        
         return frame[y_offset:y_offset + h, x_offset:x_offset + w]
 
-    animated = clip.transform(make_frame)  # MoviePy 2.x
-    # For MoviePy 1.x use: animated = clip.fl(lambda gf, t: make_frame(t))
+    animated = clip.fl(lambda gf, t: make_frame(t))
 
     # Create temporary file
     fd, output_path = tempfile.mkstemp(suffix=".mp4")
@@ -126,10 +116,8 @@ if st.session_state.video_path and os.path.exists(st.session_state.video_path):
     st.markdown("---")
     st.subheader("📥 Your Video is Ready")
 
-    # Show the video
     st.video(st.session_state.video_path)
 
-    # Download button
     with open(st.session_state.video_path, "rb") as f:
         video_bytes = f.read()
 
