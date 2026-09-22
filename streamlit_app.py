@@ -6,7 +6,10 @@ from PIL import Image, ImageEnhance, ImageFilter, ImageDraw, ImageFont
 from moviepy.editor import ImageClip, AudioFileClip, CompositeVideoClip, TextClip
 from moviepy.video.fx.all import resize
 import cv2
-from gtts import gTTS   # ← NEW: Text-to-Speech
+from gtts import gTTS
+import easyocr
+import requests
+from io import BytesIO
 
 # ===== FIX for Pillow 10+ =====
 if not hasattr(Image, 'ANTIALIAS'):
@@ -21,6 +24,7 @@ st.set_page_config(
 )
 
 # ====================== HELPER FUNCTIONS ======================
+
 def enhance_image(image: Image.Image, sharpness=1.5, contrast=1.2, brightness=1.1, color=1.1) -> Image.Image:
     img = image.convert("RGB")
     img = ImageEnhance.Sharpness(img).enhance(sharpness)
@@ -76,12 +80,30 @@ def add_watermark(image: Image.Image, watermark_img=None, text=None,
     return result.convert("RGB")
 
 def text_to_audio(text: str, lang: str = "en", slow: bool = False) -> str:
-    """Convert text to speech and return temporary audio file path"""
     tts = gTTS(text=text, lang=lang, slow=slow)
     fd, path = tempfile.mkstemp(suffix=".mp3")
     os.close(fd)
     tts.save(path)
     return path
+
+@st.cache_resource
+def load_ocr_reader():
+    return easyocr.Reader(['en', 'id'], gpu=False)
+
+def extract_text_from_image(image: Image.Image) -> str:
+    reader = load_ocr_reader()
+    img_array = np.array(image)
+    results = reader.readtext(img_array)
+    text = "\n".join([item[1] for item in results])
+    return text.strip()
+
+def text_to_image(prompt: str, width: int = 768, height: int = 768) -> Image.Image:
+    prompt_encoded = requests.utils.quote(prompt)
+    url = f"https://image.pollinations.ai/prompt/{prompt_encoded}?width={width}&height={height}&nologo=true"
+    response = requests.get(url, timeout=90)
+    response.raise_for_status()
+    img = Image.open(BytesIO(response.content)).convert("RGB")
+    return img
 
 def create_video_from_image(
     image: Image.Image,
@@ -95,9 +117,7 @@ def create_video_from_image(
     title_position: str = "top",
     audio_path: str = None
 ) -> str:
-    """Create Ken Burns style video with optional title and background music"""
     img_array = np.array(image.convert("RGB"))
-    
     clip = ImageClip(img_array).set_duration(duration)
     w, h = clip.size
 
@@ -139,30 +159,26 @@ def create_video_from_image(
                 txt_clip = txt_clip.set_position(("center", 40))
             elif title_position == "center":
                 txt_clip = txt_clip.set_position("center")
-            else:  # bottom
+            else:
                 txt_clip = txt_clip.set_position(("center", h - 100))
 
             animated = CompositeVideoClip([animated, txt_clip])
         except Exception as e:
             st.warning(f"Could not add title: {e}")
 
-    # Add Background Music / Narration
+    # Add Audio
     if audio_path and os.path.exists(audio_path):
         try:
             audio = AudioFileClip(audio_path)
-            # Loop or trim audio to match video duration
             if audio.duration < duration:
                 audio = audio.fx(lambda c: c.loop(duration=duration))
             else:
                 audio = audio.subclip(0, duration)
-            
-            # Lower volume a bit
             audio = audio.volumex(0.7)
             animated = animated.set_audio(audio)
         except Exception as e:
             st.warning(f"Could not add audio: {e}")
 
-    # Export
     fd, output_path = tempfile.mkstemp(suffix=".mp4")
     os.close(fd)
 
@@ -184,10 +200,12 @@ if "processed_image" not in st.session_state:
     st.session_state.processed_image = None
 if "tts_audio_path" not in st.session_state:
     st.session_state.tts_audio_path = None
+if "extracted_text" not in st.session_state:
+    st.session_state.extracted_text = ""
 
 # ====================== UI ======================
 st.title("🖼️ → 🎬 Image to Video Generator Pro")
-st.markdown("Enhance • Watermark • Music • Title • **Text-to-Speech** • Cinematic Video")
+st.markdown("**Enhance • Watermark • Text-to-Image • OCR • TTS • Cinematic Video**")
 st.markdown("---")
 
 # ---------- UPLOAD IMAGE ----------
@@ -196,9 +214,44 @@ uploaded_file = st.file_uploader("Upload an image", type=["jpg", "jpeg", "png", 
 if uploaded_file:
     original_image = Image.open(uploaded_file).convert("RGB")
     st.image(original_image, caption="Original Image", use_container_width=True)
+else:
+    original_image = None
 
+# ====================== TEXT TO IMAGE ======================
+st.markdown("---")
+st.subheader("🎨 Text to Image (AI Generate)")
+
+prompt = st.text_area(
+    "Describe the image you want to create",
+    placeholder="A beautiful sunset over the ocean, cinematic lighting, highly detailed, 8k",
+    height=100
+)
+
+col_a, col_b = st.columns(2)
+with col_a:
+    img_width = st.selectbox("Width", [512, 768, 1024], index=1)
+with col_b:
+    img_height = st.selectbox("Height", [512, 768, 1024], index=1)
+
+if st.button("✨ Generate Image from Text", type="primary", use_container_width=True):
+    if prompt.strip():
+        with st.spinner("Generating image... (this may take 15-40 seconds)"):
+            try:
+                generated_img = text_to_image(prompt, width=img_width, height=img_height)
+                st.session_state.processed_image = generated_img
+                st.success("✅ Image generated successfully!")
+                st.image(generated_img, caption="Generated Image", use_container_width=True)
+            except Exception as e:
+                st.error(f"Failed to generate image: {e}")
+    else:
+        st.warning("Please enter a description first.")
+
+# ====================== IMAGE TOOLS ======================
+if original_image or st.session_state.processed_image:
     st.markdown("---")
     st.subheader("🛠️ Image Tools")
+
+    current_img = st.session_state.processed_image or original_image
 
     # Enhance
     with st.expander("✨ Enhance Image Quality", expanded=False):
@@ -209,12 +262,12 @@ if uploaded_file:
         with c4: color = st.slider("Color", 0.5, 2.0, 1.1, 0.1)
 
         if st.button("Apply Enhancement"):
-            enhanced = enhance_image(original_image, sharpness, contrast, brightness, color)
+            enhanced = enhance_image(current_img, sharpness, contrast, brightness, color)
             st.session_state.processed_image = enhanced
             st.success("Enhanced!")
             st.image(enhanced, use_container_width=True)
 
-    # Add Watermark
+    # Watermark
     with st.expander("💧 Add Watermark"):
         wm_type = st.radio("Type", ["Text", "Logo"], horizontal=True)
         position = st.selectbox("Position", ["bottom-right", "bottom-left", "top-right", "top-left", "center"])
@@ -223,8 +276,7 @@ if uploaded_file:
         if wm_type == "Text":
             wm_text = st.text_input("Watermark Text", "© My Brand")
             if st.button("Add Text Watermark"):
-                base = st.session_state.processed_image or original_image
-                result = add_watermark(base, text=wm_text, position=position, opacity=opacity)
+                result = add_watermark(current_img, text=wm_text, position=position, opacity=opacity)
                 st.session_state.processed_image = result
                 st.image(result, use_container_width=True)
         else:
@@ -232,118 +284,143 @@ if uploaded_file:
             scale = st.slider("Logo Size", 0.05, 0.35, 0.15)
             if wm_file and st.button("Add Logo Watermark"):
                 wm_img = Image.open(wm_file)
-                base = st.session_state.processed_image or original_image
-                result = add_watermark(base, watermark_img=wm_img, position=position, opacity=opacity, scale=scale)
+                result = add_watermark(current_img, watermark_img=wm_img, position=position, opacity=opacity, scale=scale)
                 st.session_state.processed_image = result
                 st.image(result, use_container_width=True)
 
     if st.session_state.processed_image:
-        st.markdown("**Current Processed Image:**")
+        st.markdown("**Current Working Image:**")
         st.image(st.session_state.processed_image, use_container_width=True)
         if st.button("Reset Image"):
             st.session_state.processed_image = None
             st.rerun()
 
-    # ====================== VIDEO SETTINGS ======================
-    st.markdown("---")
-    st.subheader("🎬 Video Settings")
+# ====================== IMAGE TO TEXT (OCR) ======================
+st.markdown("---")
+st.subheader("📝 Image to Text (OCR)")
 
-    col1, col2 = st.columns(2)
-    with col1:
-        duration = st.slider("Duration (seconds)", 3.0, 15.0, 6.0, 0.5)
-        zoom = st.slider("Zoom Intensity", 1.1, 2.0, 1.35, 0.05)
-    with col2:
-        motion = st.selectbox("Motion Style", [
-            "Zoom In (Center)",
-            "Zoom Out",
-            "Pan Left to Right",
-            "Pan Right to Left",
-            "Pan Up",
-            "Pan Down"
-        ])
+if st.button("🔍 Extract Text from Image", use_container_width=True):
+    img_for_ocr = st.session_state.processed_image or original_image
+    if img_for_ocr is None:
+        st.warning("Please upload or generate an image first.")
+    else:
+        with st.spinner("Reading text from image... (first time may take longer)"):
+            try:
+                extracted = extract_text_from_image(img_for_ocr)
+                if extracted:
+                    st.session_state.extracted_text = extracted
+                    st.success("✅ Text extracted successfully!")
+                else:
+                    st.warning("No text found in the image.")
+                    st.session_state.extracted_text = ""
+            except Exception as e:
+                st.error(f"OCR Error: {e}")
 
-    # ---------- TITLE ----------
-    st.markdown("##### 📝 Title / Text Overlay")
-    title_text = st.text_input("Video Title", placeholder="My Beautiful Memory")
-    title_position = st.selectbox("Title Position", ["top", "center", "bottom"], index=0)
+if st.session_state.extracted_text:
+    st.text_area("Extracted Text", st.session_state.extracted_text, height=150)
 
-    # ---------- BACKGROUND MUSIC / TTS ----------
-    st.markdown("##### 🎵 Background Music / Narration")
+# ====================== VIDEO SETTINGS ======================
+st.markdown("---")
+st.subheader("🎬 Video Settings")
 
-    audio_source = st.radio(
-        "Audio Source",
-        ["Upload Music", "Text-to-Speech (Narration)", "No Audio"],
-        horizontal=True
+col1, col2 = st.columns(2)
+with col1:
+    duration = st.slider("Duration (seconds)", 3.0, 15.0, 6.0, 0.5)
+    zoom = st.slider("Zoom Intensity", 1.1, 2.0, 1.35, 0.05)
+with col2:
+    motion = st.selectbox("Motion Style", [
+        "Zoom In (Center)",
+        "Zoom Out",
+        "Pan Left to Right",
+        "Pan Right to Left",
+        "Pan Up",
+        "Pan Down"
+    ])
+
+# Title
+st.markdown("##### 📝 Title / Text Overlay")
+title_text = st.text_input(
+    "Video Title",
+    value=st.session_state.get("extracted_text", "")[:80] if st.session_state.get("extracted_text") else "",
+    placeholder="My Beautiful Memory"
+)
+title_position = st.selectbox("Title Position", ["top", "center", "bottom"], index=0)
+
+# Audio Source
+st.markdown("##### 🎵 Background Music / Narration")
+
+audio_source = st.radio(
+    "Audio Source",
+    ["Upload Music", "Text-to-Speech (Narration)", "No Audio"],
+    horizontal=True
+)
+
+audio_path = None
+
+if audio_source == "Upload Music":
+    audio_file = st.file_uploader("Upload MP3 / WAV music", type=["mp3", "wav", "m4a"])
+    if audio_file:
+        tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
+        tfile.write(audio_file.read())
+        audio_path = tfile.name
+        tfile.close()
+
+elif audio_source == "Text-to-Speech (Narration)":
+    tts_text = st.text_area(
+        "Text to convert to speech",
+        value=st.session_state.get("extracted_text", ""),
+        placeholder="Once upon a time, in a beautiful place...",
+        height=120
     )
 
-    audio_path = None
-
-    if audio_source == "Upload Music":
-        audio_file = st.file_uploader("Upload MP3 / WAV music", type=["mp3", "wav", "m4a"])
-        if audio_file:
-            tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
-            tfile.write(audio_file.read())
-            audio_path = tfile.name
-            tfile.close()
-
-    elif audio_source == "Text-to-Speech (Narration)":
-        st.info("💡 Type the text you want the AI to speak. It will be used as narration in the video.")
-        
-        tts_text = st.text_area(
-            "Text to convert to speech",
-            placeholder="Once upon a time, in a beautiful place...",
-            height=120
+    col_x, col_y = st.columns(2)
+    with col_x:
+        tts_lang = st.selectbox(
+            "Language",
+            options=[
+                ("English", "en"),
+                ("Indonesian", "id"),
+                ("Spanish", "es"),
+                ("French", "fr"),
+                ("German", "de"),
+                ("Japanese", "ja"),
+                ("Korean", "ko"),
+                ("Chinese", "zh-CN"),
+                ("Arabic", "ar"),
+                ("Hindi", "hi"),
+            ],
+            format_func=lambda x: x[0]
         )
-        
-        col_a, col_b = st.columns(2)
-        with col_a:
-            tts_lang = st.selectbox(
-                "Language",
-                options=[
-                    ("English", "en"),
-                    ("Indonesian", "id"),
-                    ("Spanish", "es"),
-                    ("French", "fr"),
-                    ("German", "de"),
-                    ("Japanese", "ja"),
-                    ("Korean", "ko"),
-                    ("Chinese", "zh-CN"),
-                    ("Arabic", "ar"),
-                    ("Hindi", "hi"),
-                ],
-                format_func=lambda x: x[0]
-            )
-            tts_lang_code = tts_lang[1]
-        with col_b:
-            tts_slow = st.checkbox("Slow speech", value=False)
+        tts_lang_code = tts_lang[1]
+    with col_y:
+        tts_slow = st.checkbox("Slow speech", value=False)
 
-        if st.button("🔊 Generate Speech"):
-            if tts_text.strip():
-                with st.spinner("Generating speech..."):
-                    # Clean previous TTS file
-                    if st.session_state.tts_audio_path and os.path.exists(st.session_state.tts_audio_path):
-                        try:
-                            os.unlink(st.session_state.tts_audio_path)
-                        except:
-                            pass
-                    
-                    path = text_to_audio(tts_text, lang=tts_lang_code, slow=tts_slow)
-                    st.session_state.tts_audio_path = path
-                    st.success("✅ Speech generated successfully!")
-                    st.audio(path)
-            else:
-                st.warning("Please enter some text first.")
+    if st.button("🔊 Generate Speech"):
+        if tts_text.strip():
+            with st.spinner("Generating speech..."):
+                if st.session_state.tts_audio_path and os.path.exists(st.session_state.tts_audio_path):
+                    try:
+                        os.unlink(st.session_state.tts_audio_path)
+                    except:
+                        pass
+                path = text_to_audio(tts_text, lang=tts_lang_code, slow=tts_slow)
+                st.session_state.tts_audio_path = path
+                st.success("✅ Speech generated!")
+                st.audio(path)
+        else:
+            st.warning("Please enter some text first.")
 
-        # Use generated TTS if available
-        if st.session_state.tts_audio_path and os.path.exists(st.session_state.tts_audio_path):
-            audio_path = st.session_state.tts_audio_path
-            st.caption("Using generated speech as video audio")
+    if st.session_state.tts_audio_path and os.path.exists(st.session_state.tts_audio_path):
+        audio_path = st.session_state.tts_audio_path
+        st.caption("Using generated speech as video audio")
 
-    # Generate Button
-    if st.button("🎬 Generate Video", type="primary", use_container_width=True):
-        final_image = st.session_state.processed_image or original_image
+# Generate Video Button
+if st.button("🎬 Generate Video", type="primary", use_container_width=True):
+    final_image = st.session_state.processed_image or original_image
 
-        # Motion parameters
+    if final_image is None:
+        st.error("Please upload an image or generate one from text first.")
+    else:
         zoom_in = True
         pan_x, pan_y = 0.0, 0.0
 
@@ -358,7 +435,7 @@ if uploaded_file:
         elif motion == "Pan Down":
             pan_y = 0.5
 
-        with st.spinner("Generating video with music/narration and title... Please wait"):
+        with st.spinner("Generating video... Please wait"):
             try:
                 if st.session_state.video_path and os.path.exists(st.session_state.video_path):
                     try:
