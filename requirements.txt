@@ -1,1 +1,6 @@
-streamlit
+image-to-video-streamlit/
+├── app.py
+├── requirements.txt
+├── README.md
+├── .gitignore
+└── .streamlit/
