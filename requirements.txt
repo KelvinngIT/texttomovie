@@ -4,3 +4,5 @@ Pillow
 moviepy
 opencv-python-headless
 gTTS
+easyocr
+requests
