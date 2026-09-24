@@ -10,6 +10,8 @@ from gtts import gTTS
 import easyocr
 import requests
 from io import BytesIO
+import json
+from datetime import datetime, timedelta
 
 # ===== FIX for Pillow 10+ =====
 if not hasattr(Image, 'ANTIALIAS'):
@@ -24,7 +26,6 @@ st.set_page_config(
 )
 
 # ====================== HELPER FUNCTIONS ======================
-
 def enhance_image(image: Image.Image, sharpness=1.5, contrast=1.2, brightness=1.1, color=1.1) -> Image.Image:
     img = image.convert("RGB")
     img = ImageEnhance.Sharpness(img).enhance(sharpness)
@@ -127,16 +128,12 @@ def create_video_from_image(
             current_zoom = 1.0 + (zoom_factor - 1.0) * progress
         else:
             current_zoom = zoom_factor - (zoom_factor - 1.0) * progress
-
         new_w = int(w * current_zoom)
         new_h = int(h * current_zoom)
-
         x_offset = int((new_w - w) * (0.5 + pan_x * 0.5) * progress)
         y_offset = int((new_h - h) * (0.5 + pan_y * 0.5) * progress)
-
         x_offset = max(0, min(x_offset, new_w - w))
         y_offset = max(0, min(y_offset, new_h - h))
-
         resized = resize(clip, newsize=(new_w, new_h))
         frame = resized.get_frame(t)
         return frame[y_offset:y_offset + h, x_offset:x_offset + w]
@@ -154,14 +151,12 @@ def create_video_from_image(
                 stroke_color="black",
                 stroke_width=2
             ).set_duration(duration)
-
             if title_position == "top":
                 txt_clip = txt_clip.set_position(("center", 40))
             elif title_position == "center":
                 txt_clip = txt_clip.set_position("center")
             else:
                 txt_clip = txt_clip.set_position(("center", h - 100))
-
             animated = CompositeVideoClip([animated, txt_clip])
         except Exception as e:
             st.warning(f"Could not add title: {e}")
@@ -181,7 +176,6 @@ def create_video_from_image(
 
     fd, output_path = tempfile.mkstemp(suffix=".mp4")
     os.close(fd)
-
     animated.write_videofile(
         output_path,
         fps=fps,
@@ -192,6 +186,41 @@ def create_video_from_image(
         logger=None
     )
     return output_path
+
+def get_users_past_year() -> int:
+    """
+    Tracks and returns the number of app visits in the past 365 days.
+    Counts each browser session only once.
+    """
+    COUNTER_FILE = "user_visits.json"
+    now = datetime.now()
+    one_year_ago = now - timedelta(days=365)
+
+    # Load existing visits
+    visits = []
+    if os.path.exists(COUNTER_FILE):
+        try:
+            with open(COUNTER_FILE, "r") as f:
+                visits = json.load(f)
+        except Exception:
+            visits = []
+
+    # Keep only visits from the last year
+    visits = [
+        v for v in visits
+        if datetime.fromisoformat(v) > one_year_ago
+    ]
+
+    # Count this session only once
+    if "counted_this_session" not in st.session_state:
+        visits.append(now.isoformat())
+        st.session_state.counted_this_session = True
+
+        # Save updated list
+        with open(COUNTER_FILE, "w") as f:
+            json.dump(visits, f)
+
+    return len(visits)
 
 # ====================== SESSION STATE ======================
 if "video_path" not in st.session_state:
@@ -208,9 +237,15 @@ st.title("🖼️ → 🎬 Image to Video Generator Pro")
 st.markdown("**Enhance • Watermark • Text-to-Image • OCR • TTS • Cinematic Video**")
 st.markdown("---")
 
+# ---------- USER COUNTER (Sidebar) ----------
+with st.sidebar:
+    st.markdown("### 📊 App Stats")
+    user_count = get_users_past_year()
+    st.metric("Users (Past Year)", user_count)
+    st.caption("Counts unique sessions in the last 365 days")
+
 # ---------- UPLOAD IMAGE ----------
 uploaded_file = st.file_uploader("Upload an image", type=["jpg", "jpeg", "png", "webp"])
-
 if uploaded_file:
     original_image = Image.open(uploaded_file).convert("RGB")
     st.image(original_image, caption="Original Image", use_container_width=True)
@@ -220,13 +255,11 @@ else:
 # ====================== TEXT TO IMAGE ======================
 st.markdown("---")
 st.subheader("🎨 Text to Image (AI Generate)")
-
 prompt = st.text_area(
     "Describe the image you want to create",
     placeholder="A beautiful sunset over the ocean, cinematic lighting, highly detailed, 8k",
     height=100
 )
-
 col_a, col_b = st.columns(2)
 with col_a:
     img_width = st.selectbox("Width", [512, 768, 1024], index=1)
@@ -250,7 +283,6 @@ if st.button("✨ Generate Image from Text", type="primary", use_container_width
 if original_image or st.session_state.processed_image:
     st.markdown("---")
     st.subheader("🛠️ Image Tools")
-
     current_img = st.session_state.processed_image or original_image
 
     # Enhance
@@ -260,7 +292,6 @@ if original_image or st.session_state.processed_image:
         with c2: contrast = st.slider("Contrast", 0.5, 2.0, 1.2, 0.1)
         with c3: brightness = st.slider("Brightness", 0.5, 2.0, 1.1, 0.1)
         with c4: color = st.slider("Color", 0.5, 2.0, 1.1, 0.1)
-
         if st.button("Apply Enhancement"):
             enhanced = enhance_image(current_img, sharpness, contrast, brightness, color)
             st.session_state.processed_image = enhanced
@@ -272,7 +303,6 @@ if original_image or st.session_state.processed_image:
         wm_type = st.radio("Type", ["Text", "Logo"], horizontal=True)
         position = st.selectbox("Position", ["bottom-right", "bottom-left", "top-right", "top-left", "center"])
         opacity = st.slider("Opacity", 0.1, 1.0, 0.45, 0.05)
-
         if wm_type == "Text":
             wm_text = st.text_input("Watermark Text", "© My Brand")
             if st.button("Add Text Watermark"):
@@ -298,7 +328,6 @@ if original_image or st.session_state.processed_image:
 # ====================== IMAGE TO TEXT (OCR) ======================
 st.markdown("---")
 st.subheader("📝 Image to Text (OCR)")
-
 if st.button("🔍 Extract Text from Image", use_container_width=True):
     img_for_ocr = st.session_state.processed_image or original_image
     if img_for_ocr is None:
@@ -322,7 +351,6 @@ if st.session_state.extracted_text:
 # ====================== VIDEO SETTINGS ======================
 st.markdown("---")
 st.subheader("🎬 Video Settings")
-
 col1, col2 = st.columns(2)
 with col1:
     duration = st.slider("Duration (seconds)", 3.0, 15.0, 6.0, 0.5)
@@ -348,7 +376,6 @@ title_position = st.selectbox("Title Position", ["top", "center", "bottom"], ind
 
 # Audio Source
 st.markdown("##### 🎵 Background Music / Narration")
-
 audio_source = st.radio(
     "Audio Source",
     ["Upload Music", "Text-to-Speech (Narration)", "No Audio"],
@@ -356,7 +383,6 @@ audio_source = st.radio(
 )
 
 audio_path = None
-
 if audio_source == "Upload Music":
     audio_file = st.file_uploader("Upload MP3 / WAV music", type=["mp3", "wav", "m4a"])
     if audio_file:
@@ -364,7 +390,6 @@ if audio_source == "Upload Music":
         tfile.write(audio_file.read())
         audio_path = tfile.name
         tfile.close()
-
 elif audio_source == "Text-to-Speech (Narration)":
     tts_text = st.text_area(
         "Text to convert to speech",
@@ -372,7 +397,6 @@ elif audio_source == "Text-to-Speech (Narration)":
         placeholder="Once upon a time, in a beautiful place...",
         height=120
     )
-
     col_x, col_y = st.columns(2)
     with col_x:
         tts_lang = st.selectbox(
@@ -417,13 +441,11 @@ elif audio_source == "Text-to-Speech (Narration)":
 # Generate Video Button
 if st.button("🎬 Generate Video", type="primary", use_container_width=True):
     final_image = st.session_state.processed_image or original_image
-
     if final_image is None:
         st.error("Please upload an image or generate one from text first.")
     else:
         zoom_in = True
         pan_x, pan_y = 0.0, 0.0
-
         if motion == "Zoom Out":
             zoom_in = False
         elif motion == "Pan Left to Right":
@@ -442,7 +464,6 @@ if st.button("🎬 Generate Video", type="primary", use_container_width=True):
                         os.unlink(st.session_state.video_path)
                     except:
                         pass
-
                 video_path = create_video_from_image(
                     final_image,
                     duration=duration,
@@ -464,10 +485,8 @@ if st.session_state.video_path and os.path.exists(st.session_state.video_path):
     st.markdown("---")
     st.subheader("📥 Your Video is Ready")
     st.video(st.session_state.video_path)
-
     with open(st.session_state.video_path, "rb") as f:
         video_bytes = f.read()
-
     st.download_button(
         label="⬇️ Download Video (MP4)",
         data=video_bytes,
